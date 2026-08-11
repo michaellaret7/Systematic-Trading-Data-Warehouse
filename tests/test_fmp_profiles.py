@@ -346,8 +346,8 @@ def test_fetch_ticker_universe_emits_progress_events() -> None:
     assert events[-1][1] == {"parts": 1, "kept": 1}
 
 
-def test_write_ticker_universe_uses_symbol_index() -> None:
-    from src.storage.arctic import write_ticker_universe
+def test_write_ticker_universe_keeps_symbol_as_a_column() -> None:
+    from src.storage.arctic import TICKER_UNIVERSE, write
 
     library = MagicMock()
     universe = pl.DataFrame(
@@ -376,10 +376,12 @@ def test_write_ticker_universe_uses_symbol_index() -> None:
         schema=TICKER_UNIVERSE_SCHEMA,
     )
 
-    write_ticker_universe(library, universe)
+    write(library, TICKER_UNIVERSE, universe)
 
     library.write.assert_called_once()
     symbol_name, pdf = library.write.call_args[0]
     assert symbol_name == "ticker_universe"
-    assert list(pdf.index.names) == ["symbol"]
-    assert pdf.index.tolist() == ["AAPL"]
+    # Only a timestamp index earns ArcticDB anything, so the universe goes to
+    # storage on a plain RangeIndex with `symbol` left as an ordinary column.
+    assert list(pdf.index.names) == [None]
+    assert pdf["symbol"].tolist() == ["AAPL"]

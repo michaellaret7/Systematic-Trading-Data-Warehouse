@@ -35,7 +35,7 @@ src/
     helpers.py       #   shared HTTP/retry/rate-limit/coercion plumbing (dataset-agnostic)
     prices.py        #   daily OHLCV
     profiles.py      #   company profiles / ticker universe
-  storage/arctic.py  # declarative Table registry + generic read/write/upsert over ArcticDB
+  storage/arctic.py  # declarative Dataset registry + generic read/write/upsert over ArcticDB
   jobs/              # recurring jobs that wire a vendor fetch to a storage write
   api/               # read-side surface for consumers
   config.py          # env/secrets (placeholder — not yet written)
@@ -48,31 +48,33 @@ tests/               # mirrors the modules under test: test_arctic, test_fmp_*, 
 
 ### Current state (mid-refactor)
 
-`src/config.py`, `src/main.py`, `src/api/equities.py`, `src/jobs/scheduler.py`, and `src/jobs/update_equities.py` are **empty placeholders**. `src/vendors/fmp.py` was split into the `src/vendors/fmp/` package, and `update_equities.py` was gutted in the move.
+`src/config.py`, `src/main.py`, `src/api/equities.py`, and `src/jobs/scheduler.py` are **empty placeholders**. `src/vendors/fmp.py` was split into the `src/vendors/fmp/` package.
 
-Consequence: `uv run pytest` currently fails at collection — `tests/test_equities.py` imports `update_daily_prices` from the empty `src/jobs/update_equities.py`. That test is the specification for the job: it must call `fetch_daily_prices` **once** for the whole batch and upsert on `(symbol, date)`. Restoring the job is the natural next step; don't delete the test to make the suite green.
+`update_equities.py` was gutted in that move and has since been restored: it calls `fetch_daily_prices` **once** for the whole batch and upserts on `(date, symbol)`. `uv run pytest` is green.
 
-### Storage: tables are declared, not hand-written
+### Storage: datasets are declared, not hand-written
 
-`storage/arctic.py` describes each dataset as a frozen `Table` (symbol, Polars schema, index columns, upsert key, sort order) and serves them all through one generic `read_table` / `write_table` / `upsert_table` trio.
+`storage/arctic.py` describes each dataset as a frozen `Dataset` — three fields: ArcticDB symbol, Polars schema, and the `key` columns that identify a row — and serves them all through one generic `read` / `write` / `upsert` trio.
 
-**Adding a dataset means adding a `Table` entry, not another pair of hand-written functions.** Thin named wrappers (`read_daily_prices`, `write_ticker_universe`) are fine as an ergonomic surface, but they must delegate to the generic trio.
+**Adding a dataset means adding a `Dataset` entry, not another pair of hand-written functions.** Don't add named wrappers (`read_daily_prices`, `write_ticker_universe`); they were pure aliasing and were deleted. Call `read(library, DAILY_PRICES, ...)`.
 
-Current tables, both in the `market_data` library:
+Current datasets, both in the `market_data` library:
 
-| symbol | index | upsert key | source |
+| symbol | key (and sort order) | pandas index | source |
 | --- | --- | --- | --- |
-| `daily_prices` | `(date, symbol)` | `(symbol, date)` | `fmp.prices.fetch_daily_prices` |
-| `ticker_universe` | `(symbol,)` | `(symbol,)` | `fmp.profiles.fetch_ticker_universe` |
+| `daily_prices` | `(date, symbol)` | `date` | `fmp.prices.fetch_daily_prices` |
+| `ticker_universe` | `(symbol,)` | RangeIndex | `fmp.profiles.fetch_ticker_universe` |
 
 Non-obvious storage invariants (learned the hard way — the comments in `arctic.py` are load-bearing):
 
-- **Push filters down into ArcticDB**, never read-then-filter in Polars. `symbols=` becomes a `QueryBuilder` predicate and `date_range=` skips whole row-segments in storage. A full read defeats the point of the store.
-- **ArcticDB silently ignores unknown column names.** `Table.selection` raises on a typo instead of quietly returning fewer columns.
-- **The Polars output format doesn't round-trip index names.** Depending on the write path an index level comes back as `index`, `level_0`, or `<name>_0`; `_restore_index_columns` renames them back. Don't assume `read` returns what `write` was given.
-- **`date_range` only applies to time-indexed tables** — it raises on `ticker_universe`.
-- **Upsert is read-concat-unique-write, and `fresh` goes last** so `keep="last"` lets refreshed rows win. Order matters.
-- Ticker symbols are upper-cased and stripped at every entry point (`normalize_symbols`, `read_table`). Keep new entry points consistent.
+- **Only a timestamp index earns ArcticDB anything.** `Dataset.time_index` is `key[0]` when that column is temporal, and `None` otherwise. A string index buys no pruning and mangles the column name on the way back, so `ticker_universe` is stored on a plain RangeIndex with `symbol` as an ordinary column. **Never write a MultiIndex** — that was the sole cause of the old `index` / `level_0` / `<name>_0` renaming mess. A single named `DatetimeIndex` round-trips its name cleanly.
+- **ArcticDB widens every temporal column to naive `datetime[ns]`** — both index and data columns, timezones dropped. `_conform` casts them back to the declared dtype on read. This is the round-trip, not defensive coding; deleting it silently changes `pl.Date` to `Datetime` and drops tz-awareness.
+- **Push filters down into ArcticDB**, never read-then-filter in Polars. `symbols=` becomes a `QueryBuilder` predicate, `start`/`end` skip whole row-segments in storage, and `where=` takes a raw `QueryBuilder` for anything else. Don't build a query DSL on top of `QueryBuilder` — expose it.
+- **ArcticDB silently ignores unknown column names.** `read` raises on a typo instead of quietly returning fewer columns.
+- **`start`/`end` only apply to time-indexed datasets** — they raise on `ticker_universe`.
+- **`upsert` rewrites only the date range `fresh` spans**, via `Library.update(..., date_range=..., upsert=True)`. It reads that range, merges on the key with `fresh` last so `keep="last"` lets refreshed rows win, and writes it back. Order matters. Never reintroduce read-whole-table/rewrite-whole-table — measured at 7.5x slower on 1M local rows, and far worse over S3.
+- **`Library.update` rejects unsorted input**, so `_to_pandas` sorting by `key` is correctness, not cosmetics.
+- Ticker symbols are upper-cased and stripped at every entry point (`normalize_symbols`, `read`). Keep new entry points consistent.
 
 ### Vendors: the messy edge
 
@@ -98,7 +100,7 @@ Storage resolves to `s3s://s3.<region>.amazonaws.com:<bucket>?...&path_prefix=ar
 
 ## Safety rails (data-warehouse-specific)
 
-- **Writes to S3 are shared state.** `write_table` *replaces* a table's contents; only `upsert_table` merges. Never call `write_*` against the real S3 library to "test" something — use a temporary LMDB library (`Arctic(f"lmdb://{tmp_path}")`), exactly as the tests do.
+- **Writes to S3 are shared state.** `write` *replaces* a dataset's entire contents; only `upsert` merges. Note that `upsert` still *replaces* every stored row inside the date range `fresh` spans — pass a complete slice for that range, not a partial one. Never call `write` against the real S3 library to "test" something — use a temporary LMDB library (`Arctic(f"lmdb://{tmp_path}")`), exactly as the tests do.
 - **Never run a seeding script yourself** unless the user explicitly asks. `seed_universe.py` makes thousands of API calls and overwrites `ticker_universe`. `pytest` is safe to run freely.
 - **Respect the vendor's quota.** Don't add a loop that fans out per-ticker requests without a `RateLimiter`; the daily-price endpoint is already one HTTP call per symbol.
 - **Backfills are expensive and hard to undo.** Before changing a schema or index, say what happens to the existing stored rows — ArcticDB versions writes, but a schema change means a rewrite.
@@ -193,7 +195,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ### Data handling
 
-- **Polars, not pandas.** Pandas appears only where ArcticDB's write path requires it (`write_table` converts at the boundary). Don't spread it further.
+- **Polars, not pandas.** Pandas appears only where ArcticDB's write path requires it (`_to_pandas` converts at the boundary). Don't spread it further.
 - **Declare the schema.** Every frame that crosses a module boundary has a `dict[str, pl.DataType]` schema constant next to the function that produces it, and is conformed to it before being returned or stored.
 - **Vectorize.** Build columns with Polars expressions; a Python loop over rows in the data path is a bug, not a style choice. Looping over *tickers* to make one HTTP call each is fine — looping over rows to compute values is not.
 - **Missing is `None`, not a sentinel.** Coercers return `None` on unparseable input rather than 0.0 or `""`.
@@ -242,8 +244,8 @@ def process_items(items: list[str], lookup: dict):
 - **Function docstrings: short, plain, direct.** Two short sentences max when possible — what it does, what it returns. No Args/Returns blocks, no implementation narration, no restating type hints. Example:
 
   ```python
-  def read_daily_prices(...):
-      """Read daily OHLCV, filtering by ticker and date range in storage."""
+  def write(library, dataset, frame):
+      """Replace a dataset's entire contents with `frame`."""
   ```
 
 - **Never delete user-authored comments.** Do not remove, rewrite, relocate, or "clean up" comments the user wrote — including inline notes, step markers, trailing flow/design blocks (e.g. module-level `"""..."""` plans), and TODO annotations. If a comment is factually wrong after a code change, fix the factual part in place; do not delete the comment. When rewriting a file, restore every pre-existing user comment. This overrides any default tendency to strip "narration" comments.

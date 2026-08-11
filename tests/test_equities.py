@@ -6,7 +6,7 @@ import polars as pl
 from arcticdb import Arctic, OutputFormat
 
 from src.jobs.update_equities import update_daily_prices
-from src.storage.arctic import DAILY_PRICES_SYMBOL, read_daily_prices
+from src.storage.arctic import DAILY_PRICES, read
 
 
 def prices(*rows: tuple[str, str, float]) -> pl.DataFrame:
@@ -43,10 +43,10 @@ def test_all_tickers_are_written_to_one_arcticdb_symbol(tmp_path: Path) -> None:
     assert fetch.call_count == 1
     assert fetch.call_args.args[0] == ["AAPL", "MSFT"]
 
-    stored = read_daily_prices(market_data)
+    stored = read(market_data, DAILY_PRICES)
     assert stored.height == 2
     assert set(stored["symbol"]) == {"AAPL", "MSFT"}
-    assert market_data.list_symbols() == [DAILY_PRICES_SYMBOL]
+    assert market_data.list_symbols() == [DAILY_PRICES.symbol]
 
 
 def test_update_replaces_the_same_ticker_and_date(tmp_path: Path) -> None:
@@ -62,6 +62,6 @@ def test_update_replaces_the_same_ticker_and_date(tmp_path: Path) -> None:
         update_daily_prices("AAPL", "test-key", market_data)  # single ticker
         update_daily_prices("AAPL", "test-key", market_data)
 
-    stored = read_daily_prices(market_data)
+    stored = read(market_data, DAILY_PRICES)
     assert stored.height == 1
     assert stored["close"].item() == 101

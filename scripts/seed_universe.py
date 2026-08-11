@@ -11,11 +11,7 @@ from dotenv import load_dotenv
 # Allow `uv run python scripts/seed_universe.py` from the repo root.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.storage.arctic import (  # noqa: E402
-    TICKER_UNIVERSE_SYMBOL,
-    connect,
-    write_ticker_universe,
-)
+from src.storage.arctic import TICKER_UNIVERSE, connect, write  # noqa: E402
 from src.vendors.fmp import fetch_ticker_universe  # noqa: E402
 
 load_dotenv()
@@ -94,10 +90,10 @@ def main() -> None:
     print(f"Loaded {universe.height} actively trading tickers")
 
     library = connect(bucket, region)
-    write_ticker_universe(library, universe)
+    write(library, TICKER_UNIVERSE, universe)
     print(
         f"Wrote {universe.height} rows to ArcticDB library "
-        f"'market_data' symbol '{TICKER_UNIVERSE_SYMBOL}'"
+        f"'market_data' symbol '{TICKER_UNIVERSE.symbol}'"
     )
 
 

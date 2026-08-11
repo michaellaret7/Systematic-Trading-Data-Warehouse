@@ -14,7 +14,7 @@ Restructure a single file so a reader can scan it top-to-bottom and understand t
 
 **This is a reorganization, not a rewrite.** Function bodies do not change. If you find a bug, mention it — do not fix it.
 
-`src/storage/arctic.py` is the closest existing example of the target ordering (declarations → helpers → generic API → named wrappers), though it predates the banner convention. Read it for the grouping instinct; take the banner format from this document.
+`src/storage/arctic.py` is the closest existing example of the target shape (helpers → declarations → generic API), and already uses the banner convention below. Read it for the grouping instinct.
 
 ## Target shape
 
