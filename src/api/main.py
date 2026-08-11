@@ -5,11 +5,13 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from src.api.daily_prices import router as daily_prices_router
+from src.api.universe import router as universe_router
 
 
 app = FastAPI(title="Systematic Trading Data API")
 
 app.include_router(daily_prices_router)
+app.include_router(universe_router)
 
 
 @app.get("/health", tags=["health"])
