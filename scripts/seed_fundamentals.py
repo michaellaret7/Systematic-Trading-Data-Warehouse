@@ -99,9 +99,9 @@ def fiscal_years(years: int, *, as_of: date) -> range:
 
 
 def main() -> None:
-    api_key, bucket, region = require("FMP_API_KEY", "S3_BUCKET", "AWS_DEFAULT_REGION")
+    (api_key,) = require("FMP_API_KEY")
 
-    library = connect(bucket, region)
+    library = connect()
     symbols = equity_symbols(library)
     years = fiscal_years(HISTORY_YEARS, as_of=date.today())
 

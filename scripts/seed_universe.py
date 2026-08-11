@@ -11,12 +11,12 @@ from src.vendors.fmp import fetch_ticker_universe
 
 
 def main() -> None:
-    api_key, bucket, region = require("FMP_API_KEY", "S3_BUCKET", "AWS_DEFAULT_REGION")
+    (api_key,) = require("FMP_API_KEY")
 
     print("Fetching FMP profile-bulk (actively trading US common stock and ETFs)...")
     universe = fetch_ticker_universe(api_key, notify=print)
 
-    write(connect(bucket, region), TICKER_UNIVERSE, universe)
+    write(connect(), TICKER_UNIVERSE, universe)
 
     print(f"Wrote {universe.height:,} rows to '{TICKER_UNIVERSE.symbol}'")
 

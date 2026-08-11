@@ -12,21 +12,28 @@ from src.vendors.fmp.prices import (
 )
 
 
-def _eod_payload(days: list[tuple[str, float]]) -> list[dict]:
-    return [
-        {
-            "date": day,
-            "open": close,
-            "high": close,
-            "low": close,
-            "close": close,
-            "volume": 1_000,
-        }
-        for day, close in days
-    ]
+def _eod_payload(
+    days: list[tuple[str, float]], *, adjusted: float | None = None
+) -> dict:
+    """A legacy-v3 single-symbol payload: ``{"symbol", "historical"}``."""
+    return {
+        "symbol": "AAPL",
+        "historical": [
+            {
+                "date": day,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "adjClose": close if adjusted is None else adjusted,
+                "volume": 1_000,
+            }
+            for day, close in days
+        ],
+    }
 
 
-def _mock_response(payload: list[dict], status_code: int = 200) -> MagicMock:
+def _mock_response(payload: dict, status_code: int = 200) -> MagicMock:
     response = MagicMock(spec=httpx.Response)
     response.status_code = status_code
     response.json.return_value = payload
@@ -66,7 +73,7 @@ def test_rate_limiter_spaces_calls(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_single_ticker_sends_from_and_to() -> None:
-    response = _mock_response(_eod_payload([("2025-01-02", 100.0)]))
+    response = _mock_response(_eod_payload([("2025-01-02", 100.0)], adjusted=97.5))
     client = MagicMock(spec=httpx.Client)
     client.get.return_value = response
 
@@ -79,9 +86,10 @@ def test_single_ticker_sends_from_and_to() -> None:
     )
 
     client.get.assert_called_once()
-    _, kwargs = client.get.call_args
+    args, kwargs = client.get.call_args
+    # The symbol rides in the path on this endpoint, not the query string.
+    assert args[0].endswith("/AAPL")
     assert kwargs["params"] == {
-        "symbol": "AAPL",
         "apikey": "test-key",
         "from": "2011-01-01",
         "to": "2026-01-01",
@@ -89,6 +97,7 @@ def test_single_ticker_sends_from_and_to() -> None:
     assert frame.height == 1
     assert frame["symbol"].item() == "AAPL"
     assert frame["close"].item() == 100.0
+    assert frame["adj_close"].item() == 97.5
 
 
 def test_bare_string_is_treated_as_one_ticker() -> None:
@@ -108,7 +117,7 @@ def test_rate_limits_each_ticker() -> None:
     }
 
     def fake_get(url: str, params: dict, timeout: float = 60):
-        return _mock_response(payloads[params["symbol"]])
+        return _mock_response(payloads[url.rsplit("/", 1)[-1]])
 
     client = MagicMock(spec=httpx.Client)
     client.get.side_effect = fake_get
@@ -136,10 +145,22 @@ def test_rate_limits_each_ticker() -> None:
         assert params["apikey"] == "test-key"
 
 
+EXPECTED_COLUMNS = [
+    "symbol",
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "adj_close",
+    "volume",
+]
+
+
 def test_empty_list() -> None:
     frame = fetch_daily_prices([], "test-key")
     assert frame.is_empty()
-    assert frame.columns == ["symbol", "date", "open", "high", "low", "close", "volume"]
+    assert frame.columns == EXPECTED_COLUMNS
 
 
 def test_retries_transient_errors() -> None:
@@ -149,7 +170,7 @@ def test_retries_transient_errors() -> None:
 
     def handle(request: httpx.Request) -> httpx.Response:
         status = statuses.pop(0)
-        payload = _eod_payload([("2025-01-02", 100.0)]) if status == 200 else []
+        payload = _eod_payload([("2025-01-02", 100.0)]) if status == 200 else {}
         return httpx.Response(status, json=payload)
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
@@ -166,11 +187,11 @@ def test_retries_transient_errors() -> None:
 
 
 def test_delisted_ticker_yields_no_rows() -> None:
-    """FMP answers `200 []` for unknown/delisted symbols instead of erroring."""
+    """FMP answers `200 {}` for unknown/delisted symbols instead of erroring."""
     with httpx.Client(
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}))
     ) as client:
         frame = fetch_daily_prices("LEHMQ", "test-key", client=client)
 
     assert frame.is_empty()
-    assert frame.columns == ["symbol", "date", "open", "high", "low", "close", "volume"]
+    assert frame.columns == EXPECTED_COLUMNS

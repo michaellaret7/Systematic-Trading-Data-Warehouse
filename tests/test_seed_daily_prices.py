@@ -28,6 +28,7 @@ def eod_rows(days: list[str], close: float) -> list[dict]:
             "high": close,
             "low": close,
             "close": close,
+            "adjClose": close * 0.97,
             "volume": 1_000,
         }
         for day in days
@@ -44,7 +45,8 @@ def fmp_handler(
     broken = fail or set()
 
     def handle(request: httpx.Request) -> httpx.Response:
-        symbol = request.url.params["symbol"]
+        # This endpoint carries the symbol in the path, not the query string.
+        symbol = request.url.path.rsplit("/", 1)[-1]
 
         if calls is not None:
             calls.append(symbol)
@@ -52,8 +54,13 @@ def fmp_handler(
         if symbol in broken:
             return httpx.Response(500, json={"Error": "boom"})
 
-        # FMP answers `200 []` for unknown and delisted tickers.
-        return httpx.Response(200, json=history.get(symbol, []))
+        rows = history.get(symbol)
+
+        # FMP answers `200 {}` for unknown and delisted tickers.
+        if rows is None:
+            return httpx.Response(200, json={})
+
+        return httpx.Response(200, json={"symbol": symbol, "historical": rows})
 
     return handle
 

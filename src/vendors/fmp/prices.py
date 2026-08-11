@@ -13,7 +13,6 @@ import polars as pl
 from .helpers import (
     DEFAULT_REQUESTS_PER_MINUTE,
     DEFAULT_TIMEOUT_SECONDS,
-    FMP_BASE_URL,
     RateLimiter,
     WaitFn,
     get,
@@ -21,18 +20,26 @@ from .helpers import (
 )
 
 
-FMP_DAILY_URL = f"{FMP_BASE_URL}/historical-price-eod/full"
+# The one place this vendor reaches outside `/stable`. The stable EOD endpoint
+# omits adjClose entirely, and its dividend-adjusted sibling returns *only*
+# adjusted columns — so staying on stable would cost a second request per
+# symbol. Legacy v3 returns raw OHLCV and adjClose together, halving a
+# 9,400-ticker backfill. Its raw `close` matches stable's to the cent (verified
+# across AAPL's full 15y history), so the unadjusted columns are unaffected by
+# the choice. If FMP retires v3, switch to
+# `/stable/historical-price-eod/{full,dividend-adjusted}` and join on date.
+FMP_DAILY_URL = "https://financialmodelingprep.com/api/v3/historical-price-full"
 
-# Full OHLCV history; one HTTP call per symbol on the stable API.
+# Full OHLCV history; one HTTP call per symbol.
 #
 # There is no bulk alternative for a multi-year backfill. FMP's `eod-bulk`
 # endpoint serves one *date* at a time (no from/to — it 400s on a range), and
-# the legacy multi-symbol endpoint takes at most 5 symbols and silently
+# the multi-symbol form of this endpoint takes at most 5 symbols and silently
 # truncates any window to the trailing year, ignoring from/to without erroring.
 HISTORY_YEARS = 15
 
-# Unknown and delisted symbols come back as `200 []` rather than an error, so
-# retries here are only ever about transient 429/502s on a long run.
+# Unknown and delisted symbols come back as an empty `200 {}` rather than an
+# error, so retries here are only ever about transient 429/502s on a long run.
 MAX_ATTEMPTS = 5
 
 DAILY_PRICES_SCHEMA: dict[str, Any] = {
@@ -42,11 +49,23 @@ DAILY_PRICES_SCHEMA: dict[str, Any] = {
     "high": pl.Float64,
     "low": pl.Float64,
     "close": pl.Float64,
+    #: Split- *and* dividend-adjusted close. `close` is only split-adjusted, so
+    #: a total-return series has to be built from this column, not from `close`.
+    "adj_close": pl.Float64,
     "volume": pl.Int64,
 }
 
-# `date` arrives from the payload as a string and is cast on the way in.
-_RAW_SCHEMA = {**DAILY_PRICES_SCHEMA, "date": pl.String}
+# The payload names this field in camelCase and hands `date` over as a string;
+# both are fixed on the way in.
+_RAW_SCHEMA = {
+    **{
+        name: dtype
+        for name, dtype in DAILY_PRICES_SCHEMA.items()
+        if name != "adj_close"
+    },
+    "date": pl.String,
+    "adjClose": pl.Float64,
+}
 
 
 # ====================================
@@ -69,11 +88,10 @@ def _fetch_symbol(
     max_attempts: int,
     wait: WaitFn | None,
 ) -> pl.DataFrame:
-    """Fetch one symbol's daily OHLCV from ``/stable/historical-price-eod/full``."""
-    rows = get(
-        FMP_DAILY_URL,
+    """Fetch one symbol's daily OHLCV and adjusted close from FMP."""
+    payload = get(
+        f"{FMP_DAILY_URL}/{symbol}",
         {
-            "symbol": symbol,
             "apikey": api_key,
             "from": start.isoformat(),
             "to": end.isoformat(),
@@ -83,12 +101,20 @@ def _fetch_symbol(
         wait=wait,
     ).json()
 
-    if not isinstance(rows, list):
-        raise RuntimeError(f"Unexpected FMP response for {symbol}: {rows}")
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Unexpected FMP response for {symbol}: {payload}")
 
-    return pl.DataFrame(rows, schema=_RAW_SCHEMA, strict=False).with_columns(
-        pl.lit(symbol).alias("symbol"),
-        pl.col("date").str.to_date(),
+    # An unknown or delisted symbol answers with a bare `{}`, not an error.
+    rows = payload.get("historical", [])
+
+    return (
+        pl.DataFrame(rows, schema=_RAW_SCHEMA, strict=False)
+        .with_columns(
+            pl.lit(symbol).alias("symbol"),
+            pl.col("date").str.to_date(),
+        )
+        .rename({"adjClose": "adj_close"})
+        .select(list(DAILY_PRICES_SCHEMA))
     )
 
 
@@ -109,10 +135,11 @@ def fetch_daily_prices(
     max_attempts: int = MAX_ATTEMPTS,
     wait: WaitFn | None = None,
 ) -> pl.DataFrame:
-    """Pull up to ``years`` of daily OHLCV for every ticker, rate-limited.
+    """Pull up to ``years`` of daily OHLCV and adjusted close per ticker.
 
-    FMP's stable daily-history endpoint takes one symbol per request, so this
-    calls it once per ticker; a bare string counts as one ticker.
+    Usable multi-symbol and bulk forms do not exist (see ``FMP_DAILY_URL``), so
+    this calls the endpoint once per ticker, rate-limited; a bare string counts
+    as one ticker.
     """
     symbols = normalize_symbols(tickers)
     if not symbols:

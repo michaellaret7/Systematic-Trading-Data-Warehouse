@@ -38,9 +38,9 @@ def main(argv: list[str]) -> None:
             "Usage: python -m src.jobs.update_equities TICKER [TICKER ...]"
         )
 
-    api_key, bucket, region = require("FMP_API_KEY", "S3_BUCKET", "AWS_DEFAULT_REGION")
+    (api_key,) = require("FMP_API_KEY")
 
-    rows = update_daily_prices(argv, api_key, connect(bucket, region))
+    rows = update_daily_prices(argv, api_key, connect())
 
     print(
         f"Upserted {rows:,} rows into '{DAILY_PRICES.symbol}' for {len(argv)} ticker(s)"

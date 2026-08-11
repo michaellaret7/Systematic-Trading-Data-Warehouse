@@ -1,0 +1,15 @@
+# Scheduled warehouse jobs, read by supercronic in the `cron` container.
+#
+# Times are UTC (see TZ in docker-compose.yml). US equity markets close at
+# 21:00 UTC (16:00 ET) during EDT and 22:00 UTC during EST, so daily price
+# updates are scheduled well after the later of the two.
+#
+# min  hour  dom  mon  dow  command
+# ---  ----  ---  ---  ---  -------------------------------------------------
+
+# Daily OHLCV, weekdays after the US close.
+30 23 * * 1-5 python -m src.jobs.update_equities AAPL MSFT
+
+# Ticker universe refresh — commented out until you decide the cadence.
+# seed_universe.py makes thousands of API calls and *replaces* ticker_universe.
+# 0 6 * * 6 python -m scripts.seed_universe
