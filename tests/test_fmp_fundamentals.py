@@ -9,11 +9,12 @@ from src.vendors.fmp.fundamentals import (
     BALANCE_SHEET,
     CASH_FLOW,
     INCOME_STATEMENT,
+    MAX_ATTEMPTS,
+    MAX_BACKOFF_SECONDS,
     QUARTERLY_PERIODS,
     RATIOS,
     _snake,
     fetch_statement,
-    fetch_statements,
 )
 
 
@@ -42,9 +43,6 @@ SHENZHEN_ROW = (
 )
 
 INCOME_CSV = "\n".join([INCOME_HEADER, AAPL_ROW, MSFT_ROW, SHENZHEN_ROW])
-
-# No sleeping in tests: one call per millisecond drains the limiter instantly.
-UNTHROTTLED = 60_000.0
 
 
 def csv_client(body: str, *, seen: list[dict] | None = None) -> httpx.Client:
@@ -162,34 +160,20 @@ def test_fetch_statement_raises_on_an_error_payload() -> None:
             )
 
 
-def test_fetch_statements_walks_every_year_and_period() -> None:
+def test_fetch_statement_asks_for_the_year_and_period_given() -> None:
     seen: list[dict] = []
 
     with csv_client(INCOME_CSV, seen=seen) as client:
-        frame = fetch_statements(
-            INCOME_STATEMENT,
-            "key",
-            years=[2010, 2011],
-            periods=QUARTERLY_PERIODS,
-            symbols=["AAPL"],
-            requests_per_minute=UNTHROTTLED,
-            client=client,
-        )
+        fetch_statement(INCOME_STATEMENT, "key", year=2011, period="Q3", client=client)
 
-    requested = [(call["year"], call["period"]) for call in seen]
-    assert requested == [
-        ("2010", "Q1"),
-        ("2010", "Q2"),
-        ("2010", "Q3"),
-        ("2010", "Q4"),
-        ("2011", "Q1"),
-        ("2011", "Q2"),
-        ("2011", "Q3"),
-        ("2011", "Q4"),
-    ]
-    # All eight parts carried the same period, and one row survives per key.
-    assert frame.height == 1
-    assert frame["symbol"].to_list() == ["AAPL"]
+    assert seen == [{"year": "2011", "period": "Q3", "apikey": "key"}]
+
+
+def test_bulk_backoff_ladder_outlasts_the_throttle_window() -> None:
+    # The throttle clears after a few idle minutes, so the ladder has to be
+    # able to wait that long: 10s doubling to a 600s ceiling over 12 attempts.
+    assert MAX_BACKOFF_SECONDS >= 600.0
+    assert MAX_ATTEMPTS >= 12
 
 
 def test_annual_and_quarterly_periods_cover_the_fiscal_calendar() -> None:

@@ -6,7 +6,11 @@ per ticker. The feed is global — the caller passes the symbols it wants and
 the rest is dropped before anything accumulates.
 
 The four statements differ only in their endpoint and their numeric columns,
-so each is declared as a ``Statement`` and served by one fetch pair.
+so each is declared as a ``Statement`` and served by one fetch function.
+
+One call per invocation, deliberately: these feeds are throttled hard enough
+that a caller has to be able to checkpoint between parts, so the loop over
+years and periods belongs to the job, not here.
 """
 
 from __future__ import annotations
@@ -23,7 +27,6 @@ import polars as pl
 from .helpers import (
     FMP_BASE_URL,
     Notify,
-    RateLimiter,
     get,
     normalize_symbols,
     parse_frame,
@@ -33,12 +36,15 @@ from .helpers import (
 ANNUAL_PERIODS = ("FY",)
 QUARTERLY_PERIODS = ("Q1", "Q2", "Q3", "Q4")
 
-# Bulk fundamentals answer 13-55 MB per call and FMP guards them with a
-# separate, much tighter limit than the per-symbol endpoints: a handful of
-# back-to-back calls already earns a 429. Pace slowly and let the backoff in
-# ``helpers.get`` absorb the rest.
-BULK_REQUESTS_PER_MINUTE = 6.0
-MAX_ATTEMPTS = 8
+# Bulk fundamentals answer 13-55 MB per call, and FMP throttles them on a
+# rolling window measured in megabytes rather than calls: a seed run degrades
+# steadily (one retry, then two, then three) as the window fills, and clears
+# completely after a few idle minutes. No `Retry-After` or rate-limit header
+# comes back, so the backoff ladder is the only instrument we have — it has to
+# reach past the width of that window, hence the 10-minute ceiling.
+BULK_REQUESTS_PER_MINUTE = 3.0
+MAX_ATTEMPTS = 12
+MAX_BACKOFF_SECONDS = 600.0
 TIMEOUT_SECONDS = 300.0
 
 
@@ -393,6 +399,7 @@ def fetch_statement(
             client=http,
             timeout=TIMEOUT_SECONDS,
             max_attempts=MAX_ATTEMPTS,
+            max_backoff=MAX_BACKOFF_SECONDS,
             wait=lambda seconds, attempt: say(
                 f"{statement.name} {year} {period}: rate limited, "
                 f"retry {attempt} in {seconds:.0f}s"
@@ -414,61 +421,6 @@ def fetch_statement(
         frame.drop_nulls(["date", "symbol"])
         # FMP occasionally repeats a period after a restatement; the storage
         # key is (date, symbol), so collapse to the last one it sent.
-        .unique(subset=["date", "symbol"], keep="last")
-        .sort(["date", "symbol"])
-    )
-
-
-def fetch_statements(
-    statement: Statement,
-    api_key: str,
-    *,
-    years: Iterable[int],
-    periods: Iterable[str],
-    symbols: Iterable[str] | None = None,
-    requests_per_minute: float = BULK_REQUESTS_PER_MINUTE,
-    client: httpx.Client | None = None,
-    notify: Notify | None = None,
-) -> pl.DataFrame:
-    """Fetch one statement across every ``years`` x ``periods`` pair, rate-limited.
-
-    Each part is narrowed to ``symbols`` before it is kept, so memory tracks
-    the requested universe rather than FMP's global feed.
-    """
-    say = notify or (lambda message: None)
-    wanted = None if symbols is None else normalize_symbols(symbols)
-
-    limiter = RateLimiter(requests_per_minute)
-    session = nullcontext(client) if client else httpx.Client(timeout=TIMEOUT_SECONDS)
-    frames: list[pl.DataFrame] = []
-
-    with session as http:
-        for year in years:
-            for period in periods:
-                limiter.wait()
-
-                part = fetch_statement(
-                    statement,
-                    api_key,
-                    year=year,
-                    period=period,
-                    symbols=wanted,
-                    client=http,
-                    notify=notify,
-                )
-
-                frames.append(part)
-
-                say(f"{statement.name} {year} {period}: {part.height:,} rows kept")
-
-    if not frames:
-        return pl.DataFrame(schema=statement.schema)
-
-    return (
-        pl.concat(frames)
-        # FMP's `year` is a bucket, not the period end: a July-year-end filer
-        # asked for under 2011 comes back dated 2010-07-31, so neighbouring
-        # years overlap and the storage key would collide without this.
         .unique(subset=["date", "symbol"], keep="last")
         .sort(["date", "symbol"])
     )

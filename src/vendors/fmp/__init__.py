@@ -19,7 +19,7 @@ from .fundamentals import (
     QUARTERLY_PERIODS,
     RATIOS,
     RATIOS_SCHEMA,
-    fetch_statements,
+    fetch_statement,
 )
 from .prices import DAILY_PRICES_SCHEMA, fetch_daily_prices
 from .profiles import TICKER_UNIVERSE_SCHEMA, fetch_ticker_universe
@@ -38,6 +38,6 @@ __all__ = [
     "RATIOS_SCHEMA",
     "TICKER_UNIVERSE_SCHEMA",
     "fetch_daily_prices",
-    "fetch_statements",
+    "fetch_statement",
     "fetch_ticker_universe",
 ]

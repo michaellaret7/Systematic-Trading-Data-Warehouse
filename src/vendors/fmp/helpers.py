@@ -85,6 +85,7 @@ def get(
     client: httpx.Client | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_attempts: int = 1,
+    max_backoff: float = MAX_BACKOFF_SECONDS,
     wait: WaitFn | None = None,
 ) -> httpx.Response:
     """GET ``url`` (optionally on a shared client) and raise on HTTP errors.
@@ -92,7 +93,8 @@ def get(
     With ``max_attempts`` above 1, responses in ``RETRY_STATUS_CODES`` are
     retried with exponential backoff, honouring ``Retry-After`` when present.
     ``wait`` receives ``(seconds, attempt)``; pass one to render the delay or
-    to skip it in tests.
+    to skip it in tests. ``max_backoff`` caps the delay: FMP throttles its
+    bulk feeds on a window wider than the per-symbol default allows for.
     """
     sleeper = wait or (lambda seconds, attempt: time.sleep(seconds))
     fetch = httpx.get if client is None else client.get
@@ -105,7 +107,7 @@ def get(
             break
 
         sleeper(_retry_after_seconds(response) or delay, attempt)
-        delay = min(delay * 2, MAX_BACKOFF_SECONDS)
+        delay = min(delay * 2, max_backoff)
 
     response.raise_for_status()
 

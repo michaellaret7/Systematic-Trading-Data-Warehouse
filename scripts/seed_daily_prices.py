@@ -189,8 +189,8 @@ def load(library: Library, staging: Path) -> int:
 
 
 def main() -> None:
-    api_key, bucket, region = require("FMP_API_KEY", "S3_BUCKET", "AWS_DEFAULT_REGION")
-    library = connect(bucket, region)
+    (api_key,) = require("FMP_API_KEY")
+    library = connect()
 
     universe = read(library, TICKER_UNIVERSE, columns=["symbol"])
     symbols = universe["symbol"].to_list()
