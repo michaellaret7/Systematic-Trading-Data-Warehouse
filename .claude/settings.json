@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_start_hook.py\"",
+            "timeout": 60,
+            "statusMessage": "Running codebase recon..."
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"COMMUNICATION RULE (from the user): Explain every single thing in this chat as simply and concisely as possible. Do not overcomplicate. Start super simple and super concise, then only go more in-depth and detailed if the user explicitly asks.\"}}'"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -5,20 +5,21 @@ from unittest.mock import patch
 import polars as pl
 from arcticdb import Arctic, OutputFormat
 
-from scripts.update_daily_prices import update_daily_prices
+from src.jobs.update_equities import update_daily_prices
 from src.storage.arctic import DAILY_PRICES_SYMBOL, read_daily_prices
 
 
-def prices(symbol: str, day: str, close: float) -> pl.DataFrame:
+def prices(*rows: tuple[str, str, float]) -> pl.DataFrame:
+    """Build a price frame shaped like fetch_daily_prices' batch output."""
     return pl.DataFrame(
         {
-            "symbol": [symbol],
-            "date": [date.fromisoformat(day)],
-            "open": [close],
-            "high": [close],
-            "low": [close],
-            "close": [close],
-            "volume": [100],
+            "symbol": [symbol for symbol, _, _ in rows],
+            "date": [date.fromisoformat(day) for _, day, _ in rows],
+            "open": [close for _, _, close in rows],
+            "high": [close for _, _, close in rows],
+            "low": [close for _, _, close in rows],
+            "close": [close for _, _, close in rows],
+            "volume": [100] * len(rows),
         }
     )
 
@@ -31,11 +32,16 @@ def library(path: Path):
 def test_all_tickers_are_written_to_one_arcticdb_symbol(tmp_path: Path) -> None:
     market_data = library(tmp_path / "arcticdb")
 
+    batch = prices(("AAPL", "2025-01-02", 100), ("MSFT", "2025-01-02", 200))
     with patch(
-        "scripts.update_daily_prices.fetch_daily_prices",
-        side_effect=[prices("AAPL", "2025-01-02", 100), prices("MSFT", "2025-01-02", 200)],
-    ):
+        "src.jobs.update_equities.fetch_daily_prices",
+        return_value=batch,
+    ) as fetch:
         update_daily_prices(["AAPL", "MSFT"], "test-key", market_data)
+
+    # One batch call covers every ticker.
+    assert fetch.call_count == 1
+    assert fetch.call_args.args[0] == ["AAPL", "MSFT"]
 
     stored = read_daily_prices(market_data)
     assert stored.height == 2
@@ -47,11 +53,14 @@ def test_update_replaces_the_same_ticker_and_date(tmp_path: Path) -> None:
     market_data = library(tmp_path / "arcticdb")
 
     with patch(
-        "scripts.update_daily_prices.fetch_daily_prices",
-        side_effect=[prices("AAPL", "2025-01-02", 100), prices("AAPL", "2025-01-02", 101)],
+        "src.jobs.update_equities.fetch_daily_prices",
+        side_effect=[
+            prices(("AAPL", "2025-01-02", 100)),
+            prices(("AAPL", "2025-01-02", 101)),
+        ],
     ):
-        update_daily_prices(["AAPL"], "test-key", market_data)
-        update_daily_prices(["AAPL"], "test-key", market_data)
+        update_daily_prices("AAPL", "test-key", market_data)  # single ticker
+        update_daily_prices("AAPL", "test-key", market_data)
 
     stored = read_daily_prices(market_data)
     assert stored.height == 1

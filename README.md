@@ -13,7 +13,14 @@ Install and run:
 ```bash
 uv sync
 set -a; source .env; set +a
-uv run python -m scripts.update_daily_prices AAPL MSFT
+uv run python -m src.jobs.update_equities AAPL MSFT
+```
+
+One call covers every ticker you pass; pass a single symbol to update just that
+one. Seed the ticker universe (FMP profile-bulk) separately:
+
+```bash
+uv run python scripts/seed_universe.py
 ```
 
 The table contains `symbol`, `date`, `open`, `high`, `low`, `close`, and `volume`.
