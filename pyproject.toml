@@ -1,0 +1,16 @@
+[project]
+name = "systematic-trading-data-warehouse"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "arcticdb[arrow]>=6.22,<7",
+    "httpx>=0.28",
+    "pandas>=2.2",
+    "polars>=1.30",
+    "python-dotenv>=1.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
