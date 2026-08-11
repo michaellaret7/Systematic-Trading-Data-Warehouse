@@ -10,14 +10,14 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
-  cron:
-    build:
-      context: .
-      target: cron
-    image: systematic-trading-data-warehouse-cron
-    platform: linux/amd64
-    env_file: .env
-    # Cron expressions in docker/crontab are interpreted in this timezone.
-    environment:
-      TZ: UTC
-    restart: unless-stopped
+  # cron:
+  #   build:
+  #     context: .
+  #     target: cron
+  #   image: systematic-trading-data-warehouse-cron
+  #   platform: linux/amd64
+  #   env_file: .env
+  #   # Cron expressions in docker/crontab are interpreted in this timezone.
+  #   environment:
+  #     TZ: UTC
+  #   restart: unless-stopped

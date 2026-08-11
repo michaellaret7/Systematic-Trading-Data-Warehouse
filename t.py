@@ -16,7 +16,7 @@ symbols = [
 ]
 
 response = requests.get(
-    "http://127.0.0.1:8000/v1/daily-prices",
+    "http://0.0.0.0:8000/v1/daily-prices",
     params={
         "symbols": [*symbols, BENCHMARK],
         # Extra history so the first 60 trading days aren't all NaN.
