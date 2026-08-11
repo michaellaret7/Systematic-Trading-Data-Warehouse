@@ -34,7 +34,7 @@ src/
     helpers.py       #   shared HTTP/retry/rate-limit/coercion plumbing (dataset-agnostic)
     prices.py        #   daily OHLCV
     profiles.py      #   company profiles / ticker universe
-  storage/arctic.py  # declarative Dataset registry + generic read/write/upsert over ArcticDB
+  storage/arctic/    # Dataset type, registry, frame boundary, connect, read/write/upsert
   jobs/              # recurring jobs that wire a vendor fetch to a storage write
   config.py          # the only place `.env` / os.environ is read (`require(...)`)
 scripts/             # hand-run seeding jobs
@@ -49,7 +49,7 @@ Every file in `src/` is live code — the empty placeholders (`main.py`, `api/eq
 
 ### Storage: datasets are declared, not hand-written
 
-`storage/arctic.py` describes each dataset as a frozen `Dataset` — three fields: ArcticDB symbol, Polars schema, and the `key` columns that identify a row — and serves them all through one generic `read` / `write` / `upsert` trio.
+`storage/arctic/` describes each dataset as a frozen `Dataset` — three fields: ArcticDB symbol, Polars schema, and the `key` columns that identify a row — and serves them all through one generic `read` / `write` / `upsert` trio (`dataset.py`, `registry.py`, `frames.py`, `connection.py`, `ops.py`).
 
 **Adding a dataset means adding a `Dataset` entry, not another pair of hand-written functions.** Don't add named wrappers (`read_daily_prices`, `write_ticker_universe`); they were pure aliasing and were deleted. Call `read(library, DAILY_PRICES, ...)`.
 
@@ -60,15 +60,15 @@ Current datasets, both in the `market_data` library:
 | `daily_prices` | `(date, symbol)` | `date` | `fmp.prices.fetch_daily_prices` |
 | `ticker_universe` | `(symbol,)` | RangeIndex | `fmp.profiles.fetch_ticker_universe` |
 
-Non-obvious storage invariants (learned the hard way — the comments in `arctic.py` are load-bearing):
+Non-obvious storage invariants (learned the hard way — the comments in `storage/arctic/` are load-bearing):
 
 - **Only a timestamp index earns ArcticDB anything.** `Dataset.time_index` is `key[0]` when that column is temporal, and `None` otherwise. A string index buys no pruning and mangles the column name on the way back, so `ticker_universe` is stored on a plain RangeIndex with `symbol` as an ordinary column. **Never write a MultiIndex** — that was the sole cause of the old `index` / `level_0` / `<name>_0` renaming mess. A single named `DatetimeIndex` round-trips its name cleanly.
-- **ArcticDB widens every temporal column to naive `datetime[ns]`** — both index and data columns, timezones dropped. `_conform` casts them back to the declared dtype on read. This is the round-trip, not defensive coding; deleting it silently changes `pl.Date` to `Datetime` and drops tz-awareness.
+- **ArcticDB widens every temporal column to naive `datetime[ns]`** — both index and data columns, timezones dropped. `conform` casts them back to the declared dtype on read. This is the round-trip, not defensive coding; deleting it silently changes `pl.Date` to `Datetime` and drops tz-awareness.
 - **Push filters down into ArcticDB**, never read-then-filter in Polars. `symbols=` becomes a `QueryBuilder` predicate, `start`/`end` skip whole row-segments in storage, and `where=` takes a raw `QueryBuilder` for anything else. Don't build a query DSL on top of `QueryBuilder` — expose it.
 - **ArcticDB silently ignores unknown column names.** `read` raises on a typo instead of quietly returning fewer columns.
 - **`start`/`end` only apply to time-indexed datasets** — they raise on `ticker_universe`.
 - **`upsert` rewrites only the date range `fresh` spans**, via `Library.update(..., date_range=..., upsert=True)`. It reads that range, merges on the key with `fresh` last so `keep="last"` lets refreshed rows win, and writes it back. Order matters. Never reintroduce read-whole-table/rewrite-whole-table — measured at 7.5x slower on 1M local rows, and far worse over S3.
-- **`Library.update` rejects unsorted input**, so `_to_pandas` sorting by `key` is correctness, not cosmetics.
+- **`Library.update` rejects unsorted input**, so `to_pandas` sorting by `key` is correctness, not cosmetics.
 - Ticker symbols are upper-cased and stripped at every entry point (`normalize_symbols`, `read`). Keep new entry points consistent.
 
 ### Vendors: the messy edge
@@ -192,7 +192,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ### Data handling
 
-- **Polars, not pandas.** Pandas appears only where ArcticDB's write path requires it (`_to_pandas` converts at the boundary). Don't spread it further.
+- **Polars, not pandas.** Pandas appears only where ArcticDB's write path requires it (`to_pandas` converts at the boundary). Don't spread it further.
 - **Declare the schema.** Every frame that crosses a module boundary has a `dict[str, pl.DataType]` schema constant next to the function that produces it, and is conformed to it before being returned or stored.
 - **Vectorize.** Build columns with Polars expressions; a Python loop over rows in the data path is a bug, not a style choice. Looping over *tickers* to make one HTTP call each is fine — looping over rows to compute values is not.
 - **Missing is `None`, not a sentinel.** Coercers return `None` on unparseable input rather than 0.0 or `""`.

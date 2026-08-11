@@ -14,7 +14,7 @@ Restructure a single file so a reader can scan it top-to-bottom and understand t
 
 **This is a reorganization, not a rewrite.** Function bodies do not change. If you find a bug, mention it — do not fix it.
 
-`src/storage/arctic.py` is the closest existing example of the target shape (helpers → declarations → generic API), and already uses the banner convention below. Read it for the grouping instinct.
+`src/storage/arctic/registry.py` is a small example of the target shape (helpers → declarations), and already uses the banner convention below. Read it for the grouping instinct.
 
 ## Target shape
 
