@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any
@@ -13,6 +12,7 @@ import polars as pl
 
 from .helpers import (
     FMP_BASE_URL,
+    Notify,
     as_bool,
     as_date,
     as_float,
@@ -74,9 +74,6 @@ _FIFTH_LETTER_TYPES: dict[str, str] = {
 _PREFERRED_NAME_PATTERN = re.compile(
     r"%|\bseries\b|\bcumulative\b|\bpreferred\b|\bdepositary\b", re.IGNORECASE
 )
-
-# Progress callback: receives one ready-to-print line per part or retry.
-Notify = Callable[[str], None]
 
 TICKER_UNIVERSE_SCHEMA: dict[str, Any] = {
     "symbol": pl.String,

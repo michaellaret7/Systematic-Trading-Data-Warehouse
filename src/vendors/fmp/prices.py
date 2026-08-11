@@ -15,6 +15,7 @@ from .helpers import (
     DEFAULT_TIMEOUT_SECONDS,
     FMP_BASE_URL,
     RateLimiter,
+    WaitFn,
     get,
     normalize_symbols,
 )
@@ -23,8 +24,16 @@ from .helpers import (
 FMP_DAILY_URL = f"{FMP_BASE_URL}/historical-price-eod/full"
 
 # Full OHLCV history; one HTTP call per symbol on the stable API.
-# (FMP's multi-symbol historical endpoint is legacy and capped at 3 symbols.)
+#
+# There is no bulk alternative for a multi-year backfill. FMP's `eod-bulk`
+# endpoint serves one *date* at a time (no from/to — it 400s on a range), and
+# the legacy multi-symbol endpoint takes at most 5 symbols and silently
+# truncates any window to the trailing year, ignoring from/to without erroring.
 HISTORY_YEARS = 15
+
+# Unknown and delisted symbols come back as `200 []` rather than an error, so
+# retries here are only ever about transient 429/502s on a long run.
+MAX_ATTEMPTS = 5
 
 DAILY_PRICES_SCHEMA: dict[str, Any] = {
     "symbol": pl.String,
@@ -57,6 +66,8 @@ def _fetch_symbol(
     start: date,
     end: date,
     client: httpx.Client,
+    max_attempts: int,
+    wait: WaitFn | None,
 ) -> pl.DataFrame:
     """Fetch one symbol's daily OHLCV from ``/stable/historical-price-eod/full``."""
     rows = get(
@@ -68,6 +79,8 @@ def _fetch_symbol(
             "to": end.isoformat(),
         },
         client=client,
+        max_attempts=max_attempts,
+        wait=wait,
     ).json()
 
     if not isinstance(rows, list):
@@ -93,6 +106,8 @@ def fetch_daily_prices(
     end: date | None = None,
     requests_per_minute: float = DEFAULT_REQUESTS_PER_MINUTE,
     client: httpx.Client | None = None,
+    max_attempts: int = MAX_ATTEMPTS,
+    wait: WaitFn | None = None,
 ) -> pl.DataFrame:
     """Pull up to ``years`` of daily OHLCV for every ticker, rate-limited.
 
@@ -119,7 +134,13 @@ def fetch_daily_prices(
 
             frames.append(
                 _fetch_symbol(
-                    symbol, api_key, start=window_start, end=window_end, client=http
+                    symbol,
+                    api_key,
+                    start=window_start,
+                    end=window_end,
+                    client=http,
+                    max_attempts=max_attempts,
+                    wait=wait,
                 )
             )
 

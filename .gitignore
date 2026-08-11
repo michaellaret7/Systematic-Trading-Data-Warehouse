@@ -219,3 +219,6 @@ __marimo__/
 
 # Claude Code local overrides
 .claude/settings.local.json
+
+# Local staging for the price backfill (scripts/seed_daily_prices.py)
+data/

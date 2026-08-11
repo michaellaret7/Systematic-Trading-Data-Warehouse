@@ -6,11 +6,31 @@ import pytest
 from arcticdb import Arctic, OutputFormat, QueryBuilder
 
 from src.storage.arctic import (
+    BALANCE_SHEET_ANNUAL,
+    BALANCE_SHEET_QUARTERLY,
+    CASH_FLOW_ANNUAL,
+    CASH_FLOW_QUARTERLY,
     DAILY_PRICES,
+    INCOME_STATEMENT_ANNUAL,
+    INCOME_STATEMENT_QUARTERLY,
+    RATIOS_ANNUAL,
+    RATIOS_QUARTERLY,
     TICKER_UNIVERSE,
     read,
     upsert,
     write,
+)
+
+
+FUNDAMENTALS = (
+    INCOME_STATEMENT_ANNUAL,
+    INCOME_STATEMENT_QUARTERLY,
+    BALANCE_SHEET_ANNUAL,
+    BALANCE_SHEET_QUARTERLY,
+    CASH_FLOW_ANNUAL,
+    CASH_FLOW_QUARTERLY,
+    RATIOS_ANNUAL,
+    RATIOS_QUARTERLY,
 )
 
 
@@ -44,6 +64,26 @@ def universe_row(symbol: str, market_cap: float) -> pl.DataFrame:
             "last_updated": [datetime(2026, 3, 22, tzinfo=timezone.utc)],
         },
         schema=TICKER_UNIVERSE.schema,
+    )
+
+
+def income_row(symbol: str, day: str, revenue: float) -> pl.DataFrame:
+    """One income-statement row; every column FMP did not fill stays null."""
+    filed = {
+        "date": date.fromisoformat(day),
+        "symbol": symbol,
+        "fiscal_year": 2011,
+        "period": "FY",
+        "reported_currency": "USD",
+        "cik": "0000320193",
+        "filing_date": date(2011, 10, 26),
+        "accepted_date": datetime(2011, 10, 26, 16, 35, 25),
+        "revenue": revenue,
+    }
+
+    return pl.DataFrame(
+        {name: [filed.get(name)] for name in INCOME_STATEMENT_ANNUAL.schema},
+        schema=INCOME_STATEMENT_ANNUAL.schema,
     )
 
 
@@ -299,3 +339,41 @@ def test_symbols_filter_on_universe(tmp_path: Path) -> None:
 
     assert frame["symbol"].to_list() == ["MSFT"]
     assert frame.columns == ["symbol", "market_cap"]
+
+
+def test_every_fundamentals_table_has_its_own_symbol() -> None:
+    symbols = [dataset.symbol for dataset in FUNDAMENTALS]
+
+    assert len(set(symbols)) == 8
+    for dataset in FUNDAMENTALS:
+        # Period end is the index, so ArcticDB can prune on it like prices.
+        assert dataset.key == ("date", "symbol")
+        assert dataset.time_index == "date"
+
+
+def test_fundamentals_round_trip_preserves_declared_types(tmp_path: Path) -> None:
+    market_data = library(tmp_path / "arcticdb")
+    fresh = income_row("AAPL", "2011-09-24", revenue=108_249_000_000.0)
+
+    write(market_data, INCOME_STATEMENT_ANNUAL, fresh)
+    stored = read(market_data, INCOME_STATEMENT_ANNUAL)
+
+    assert stored.schema == pl.Schema(INCOME_STATEMENT_ANNUAL.schema)
+    row = stored.row(0, named=True)
+    assert row["date"] == date(2011, 9, 24)
+    assert row["revenue"] == 108_249_000_000.0
+    assert row["cik"] == "0000320193"
+    assert row["accepted_date"] == datetime(2011, 10, 26, 16, 35, 25)
+
+
+def test_fundamentals_upsert_restates_a_period(tmp_path: Path) -> None:
+    market_data = library(tmp_path / "arcticdb")
+    write(market_data, INCOME_STATEMENT_ANNUAL, income_row("AAPL", "2011-09-24", 1.0))
+
+    upsert(market_data, INCOME_STATEMENT_ANNUAL, income_row("AAPL", "2011-09-24", 2.0))
+    upsert(market_data, INCOME_STATEMENT_ANNUAL, income_row("MSFT", "2011-06-30", 3.0))
+
+    stored = read(market_data, INCOME_STATEMENT_ANNUAL).sort("date")
+
+    assert stored["symbol"].to_list() == ["MSFT", "AAPL"]
+    assert stored["revenue"].to_list() == [3.0, 2.0]

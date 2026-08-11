@@ -16,12 +16,15 @@ from typing import Any
 import polars as pl
 from arcticdb import Arctic, OutputFormat, QueryBuilder
 from arcticdb.version_store.library import Library
-import os
-from dotenv import load_dotenv
 
-from src.vendors.fmp import DAILY_PRICES_SCHEMA, TICKER_UNIVERSE_SCHEMA
-
-load_dotenv()
+from src.vendors.fmp import (
+    BALANCE_SHEET_SCHEMA,
+    CASH_FLOW_SCHEMA,
+    DAILY_PRICES_SCHEMA,
+    INCOME_STATEMENT_SCHEMA,
+    RATIOS_SCHEMA,
+    TICKER_UNIVERSE_SCHEMA,
+)
 
 
 LIBRARY_NAME = "market_data"
@@ -131,16 +134,35 @@ TICKER_UNIVERSE = Dataset(
 )
 
 
+def _by_cadence(name: str, schema: dict[str, Any]) -> tuple[Dataset, Dataset]:
+    """The annual and quarterly tables for one financial statement.
+
+    Both cadences share a schema and are keyed on the period end date, so the
+    only thing that differs is the symbol they are stored under.
+    """
+    return tuple(
+        Dataset(symbol=f"{name}_{cadence}", schema=schema, key=("date", "symbol"))
+        for cadence in ("annual", "quarterly")
+    )
+
+
+INCOME_STATEMENT_ANNUAL, INCOME_STATEMENT_QUARTERLY = _by_cadence(
+    "income_statement", INCOME_STATEMENT_SCHEMA
+)
+BALANCE_SHEET_ANNUAL, BALANCE_SHEET_QUARTERLY = _by_cadence(
+    "balance_sheet", BALANCE_SHEET_SCHEMA
+)
+CASH_FLOW_ANNUAL, CASH_FLOW_QUARTERLY = _by_cadence("cash_flow", CASH_FLOW_SCHEMA)
+RATIOS_ANNUAL, RATIOS_QUARTERLY = _by_cadence("ratios", RATIOS_SCHEMA)
+
+
 # ====================================
 # --> Storage API
 # ====================================
 
 
-def connect() -> Library:
+def connect(bucket: str, region: str) -> Library:
     """Open the `market_data` library on S3, creating it if it is missing."""
-    bucket = os.environ["S3_BUCKET"]
-    region = os.environ["AWS_DEFAULT_REGION"]
-
     uri = (
         f"s3s://s3.{region}.amazonaws.com:{bucket}"
         f"?region={region}&aws_auth=default&path_prefix=arcticdb"
@@ -249,11 +271,15 @@ def upsert(library: Library, dataset: Dataset, fresh: pl.DataFrame) -> None:
 
 
 if __name__ == "__main__":
+    from src.config import require
+
     q = QueryBuilder()
-    library = connect()
+    library = connect(*require("S3_BUCKET", "AWS_DEFAULT_REGION"))
     universe = read(
         library,
         TICKER_UNIVERSE,
-        where=q[(q["is_etf"] == True) & (q["is_fund"] == False) & (q["is_adr"] == False)],
+        where=q[
+            (q["is_etf"] == True) & (q["is_fund"] == False) & (q["is_adr"] == False)
+        ],
     )
     print(universe.columns)

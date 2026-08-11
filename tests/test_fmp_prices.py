@@ -140,3 +140,37 @@ def test_empty_list() -> None:
     frame = fetch_daily_prices([], "test-key")
     assert frame.is_empty()
     assert frame.columns == ["symbol", "date", "open", "high", "low", "close", "volume"]
+
+
+def test_retries_transient_errors() -> None:
+    """A 429 mid-backfill is retried rather than killing the run."""
+    statuses = [429, 503, 200]
+    waits: list[tuple[float, int]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        status = statuses.pop(0)
+        payload = _eod_payload([("2025-01-02", 100.0)]) if status == 200 else []
+        return httpx.Response(status, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        frame = fetch_daily_prices(
+            "AAPL",
+            "test-key",
+            client=client,
+            wait=lambda seconds, attempt: waits.append((seconds, attempt)),
+        )
+
+    assert statuses == []  # all three responses consumed
+    assert waits == [(10.0, 1), (20.0, 2)]  # exponential backoff, no real sleep
+    assert frame["close"].to_list() == [100.0]
+
+
+def test_delisted_ticker_yields_no_rows() -> None:
+    """FMP answers `200 []` for unknown/delisted symbols instead of erroring."""
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+    ) as client:
+        frame = fetch_daily_prices("LEHMQ", "test-key", client=client)
+
+    assert frame.is_empty()
+    assert frame.columns == ["symbol", "date", "open", "high", "low", "close", "volume"]

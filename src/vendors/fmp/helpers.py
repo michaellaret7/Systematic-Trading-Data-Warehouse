@@ -35,6 +35,9 @@ MAX_BACKOFF_SECONDS = 65.0
 # ``(seconds, attempt)`` — lets callers render the wait instead of blocking mutely.
 WaitFn = Callable[[float, int], None]
 
+# Progress callback: receives one ready-to-print line per unit of work.
+Notify = Callable[[str], None]
+
 
 # ====================================
 # --> Helper funcs
@@ -128,6 +131,24 @@ def parse_rows(response: httpx.Response) -> list[dict[str, Any]]:
     # `fullTimeEmployees` as a decimal FTE count ("165.8") for some issuers,
     # which blows up an int column inferred from the first N rows.
     return pl.read_csv(io.StringIO(text), infer_schema_length=0).to_dicts()
+
+
+def parse_frame(response: httpx.Response) -> pl.DataFrame:
+    """Parse a bulk CSV response into an all-text frame, empty when there is no data.
+
+    The frame form of ``parse_rows``, for payloads big enough that a list of
+    dicts is the wrong shape. Columns stay text for the same reason: the
+    caller casts them against a declared schema.
+    """
+    text = response.text.strip()
+    if not text:
+        return pl.DataFrame()
+
+    if text[:1] in {"[", "{"}:
+        # A bulk endpoint answers CSV; JSON here means an error payload.
+        raise RuntimeError(f"Unexpected FMP payload: {text[:200]}")
+
+    return pl.read_csv(io.StringIO(text), infer_schema_length=0)
 
 
 # ====================================
