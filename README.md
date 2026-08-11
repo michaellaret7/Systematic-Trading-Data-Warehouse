@@ -20,7 +20,7 @@ One call covers every ticker you pass; pass a single symbol to update just that
 one. Seed the ticker universe (FMP profile-bulk) separately:
 
 ```bash
-uv run python scripts/seed_universe.py
+uv run python -m scripts.seed_universe
 ```
 
 The table contains `symbol`, `date`, `open`, `high`, `low`, `close`, and `volume`.

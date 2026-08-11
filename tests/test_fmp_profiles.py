@@ -7,7 +7,6 @@ import pytest
 
 from src.vendors.fmp.profiles import (
     TICKER_UNIVERSE_SCHEMA,
-    US_LISTED_EXCHANGES,
     _profile_row_to_universe,
     classify_security,
     fetch_ticker_universe,
@@ -83,14 +82,16 @@ def test_fetch_ticker_universe_filters_and_dedupes() -> None:
             "isActivelyTrading": False,
         },
     ]
-    part1: list[dict] = []
+    transport = _bulk_transport(
+        {
+            0: httpx.Response(200, json=part0),
+            1: httpx.Response(200, json=[_active("AAPL")]),  # repeat of part 0
+            2: httpx.Response(200, json=[]),  # an empty page ends the pull
+        }
+    )
 
-    with patch(
-        "src.vendors.fmp.profiles.fetch_profile_bulk_part",
-        side_effect=[part0, part1],
-    ):
-        with patch("src.vendors.fmp.profiles.time.sleep"):
-            frame = fetch_ticker_universe("test-key", part_interval_seconds=0)
+    with httpx.Client(transport=transport) as client:
+        frame = fetch_ticker_universe("test-key", client=client)
 
     assert frame.height == 1
     assert frame["symbol"].to_list() == ["AAPL"]
@@ -165,20 +166,13 @@ def test_classify_security_ignores_misleading_company_name() -> None:
 def test_profile_row_drops_non_us_exchange() -> None:
     last_updated = datetime(2026, 3, 22, tzinfo=timezone.utc)
     row = _active("0700.HK", exchange="HKSE")
-    assert (
-        _profile_row_to_universe(
-            row, last_updated=last_updated, exchanges=US_LISTED_EXCHANGES
-        )
-        is None
-    )
+    assert _profile_row_to_universe(row, last_updated=last_updated) is None
 
 
 def test_profile_row_exchange_match_is_case_insensitive() -> None:
     last_updated = datetime(2026, 3, 22, tzinfo=timezone.utc)
     row = _active("AAPL", exchange="nasdaq")
-    mapped = _profile_row_to_universe(
-        row, last_updated=last_updated, exchanges=US_LISTED_EXCHANGES
-    )
+    mapped = _profile_row_to_universe(row, last_updated=last_updated)
     assert mapped is not None
     assert mapped["symbol"] == "AAPL"
 
@@ -236,32 +230,6 @@ def test_fetch_ticker_universe_drops_shell_companies() -> None:
     assert frame["symbol"].to_list() == ["AAPL"]
 
 
-def test_fetch_ticker_universe_can_keep_every_security_type() -> None:
-    rows = [_active("AAPL"), _active("ARQQW"), _active("ABR-PD", "NYSE")]
-    transport = _bulk_transport({0: httpx.Response(200, json=rows)})
-
-    with httpx.Client(transport=transport) as client:
-        frame = fetch_ticker_universe(
-            "test-key", client=client, security_types=None, exclude_industries=None
-        )
-
-    assert sorted(frame["security_type"].to_list()) == [
-        "common",
-        "preferred",
-        "warrant",
-    ]
-
-
-def test_fetch_ticker_universe_can_keep_global_feed() -> None:
-    rows = [_active("AAPL", "NASDAQ"), _active("0700.HK", "HKSE")]
-    transport = _bulk_transport({0: httpx.Response(200, json=rows)})
-
-    with httpx.Client(transport=transport) as client:
-        frame = fetch_ticker_universe("test-key", client=client, exchanges=None)
-
-    assert frame.height == 2
-
-
 def _bulk_transport(parts: dict[int, httpx.Response]) -> httpx.MockTransport:
     """Serve ``parts`` by index; anything else 400s the way FMP does."""
 
@@ -304,18 +272,15 @@ def test_fetch_ticker_universe_retries_rate_limited_part() -> None:
             )
         return responses.pop(0) if responses else httpx.Response(200, json=[])
 
-    events: list[tuple[str, dict]] = []
+    lines: list[str] = []
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        with patch("src.vendors.fmp.profiles.time.sleep"):
+        with patch("src.vendors.fmp.helpers.time.sleep"):
             frame = fetch_ticker_universe(
-                "test-key",
-                client=client,
-                on_progress=lambda event, data: events.append((event, data)),
+                "test-key", client=client, notify=lines.append
             )
 
     assert frame["symbol"].to_list() == ["AAPL"]
-    reasons = {data.get("reason") for event, data in events if event == "waiting"}
-    assert reasons == {"rate_limit"}
+    assert any("rate limited" in line for line in lines)
 
 
 def test_fetch_ticker_universe_reraises_other_http_errors() -> None:
@@ -328,22 +293,14 @@ def test_fetch_ticker_universe_reraises_other_http_errors() -> None:
     assert excinfo.value.response.status_code == 401
 
 
-def test_fetch_ticker_universe_emits_progress_events() -> None:
+def test_fetch_ticker_universe_reports_progress_per_part() -> None:
     transport = _bulk_transport({0: httpx.Response(200, json=[_active("AAPL")])})
-    events: list[tuple[str, dict]] = []
+    lines: list[str] = []
 
     with httpx.Client(transport=transport) as client:
-        fetch_ticker_universe(
-            "test-key",
-            client=client,
-            on_progress=lambda event, data: events.append((event, data)),
-        )
+        fetch_ticker_universe("test-key", client=client, notify=lines.append)
 
-    names = [event for event, _ in events]
-    assert names.count("fetching") == 2  # part 0, then the 400 that ends the pull
-    assert names.count("part_done") == 1
-    assert names[-1] == "finished"
-    assert events[-1][1] == {"parts": 1, "kept": 1}
+    assert lines == ["part 1: 1 rows → 1 kept"]
 
 
 def test_write_ticker_universe_keeps_symbol_as_a_column() -> None:

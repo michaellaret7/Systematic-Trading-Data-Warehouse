@@ -16,8 +16,12 @@ from typing import Any
 import polars as pl
 from arcticdb import Arctic, OutputFormat, QueryBuilder
 from arcticdb.version_store.library import Library
+import os
+from dotenv import load_dotenv
 
 from src.vendors.fmp import DAILY_PRICES_SCHEMA, TICKER_UNIVERSE_SCHEMA
+
+load_dotenv()
 
 
 LIBRARY_NAME = "market_data"
@@ -52,12 +56,6 @@ def _conform(frame: pl.DataFrame, schema: dict[str, Any]) -> pl.DataFrame:
         frame = frame.with_columns(missing)
 
     return frame
-
-
-def _normalize_symbols(symbols: str | Iterable[str]) -> list[str]:
-    """Upper-case and strip tickers, dropping blanks. A bare string is one ticker."""
-    values = [symbols] if isinstance(symbols, str) else list(symbols)
-    return [str(value).upper().strip() for value in values if str(value).strip()]
 
 
 def _merge(stored: pl.DataFrame, fresh: pl.DataFrame, dataset: Dataset) -> pl.DataFrame:
@@ -138,13 +136,18 @@ TICKER_UNIVERSE = Dataset(
 # ====================================
 
 
-def connect(bucket: str, region: str) -> Library:
+def connect() -> Library:
     """Open the `market_data` library on S3, creating it if it is missing."""
+    bucket = os.environ["S3_BUCKET"]
+    region = os.environ["AWS_DEFAULT_REGION"]
+
     uri = (
         f"s3s://s3.{region}.amazonaws.com:{bucket}"
         f"?region={region}&aws_auth=default&path_prefix=arcticdb"
     )
+
     arctic = Arctic(uri, output_format=OutputFormat.POLARS)
+
     return arctic.get_library(LIBRARY_NAME, create_if_missing=True)
 
 
@@ -181,13 +184,13 @@ def read(
     empty = pl.DataFrame(schema=schema)
 
     if symbols is not None:
-        symbols = _normalize_symbols(symbols)
-        if not symbols:
+        # A bare string is one ticker; tickers are upper-cased at every entry point.
+        raw = [symbols] if isinstance(symbols, str) else symbols
+        tickers = [str(value).upper().strip() for value in raw if str(value).strip()]
+        if not tickers:
             return empty
-        if "symbol" not in dataset.schema:
-            raise ValueError(f"{dataset.symbol} has no 'symbol' column")
         where = QueryBuilder() if where is None else where
-        where = where[where["symbol"].isin(symbols)]
+        where = where[where["symbol"].isin(tickers)]
 
     if not library.has_symbol(dataset.symbol):
         return empty
@@ -243,3 +246,14 @@ def upsert(library: Library, dataset: Dataset, fresh: pl.DataFrame) -> None:
         date_range=(start, end),
         upsert=True,
     )
+
+
+if __name__ == "__main__":
+    q = QueryBuilder()
+    library = connect()
+    universe = read(
+        library,
+        TICKER_UNIVERSE,
+        where=q[(q["is_etf"] == True) & (q["is_fund"] == False) & (q["is_adr"] == False)],
+    )
+    print(universe.columns)

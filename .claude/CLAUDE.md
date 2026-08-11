@@ -17,8 +17,7 @@ set -a; source .env; set +a
 ```
 
 - `uv run python -m src.jobs.update_equities AAPL MSFT` — fetch daily OHLCV for the named tickers and upsert them into the `daily_prices` table. One call covers every ticker passed.
-- `uv run python scripts/seed_universe.py` — seed `ticker_universe` from FMP's profile-bulk endpoint (paged, rate-limited, prints a live progress bar).
-- `uv run python scripts/seed_equities.py` — build a filtered US equity list from FMP's company screener.
+- `uv run python -m scripts.seed_universe` — seed `ticker_universe` from FMP's profile-bulk endpoint (paged, prints one line per part).
 - `uv run pytest` — full offline test suite. **No network, no S3**: every test mocks the HTTP layer and writes to a temporary local LMDB Arctic instance.
 
 Ruff is not a project dependency; run it on demand with `uvx ruff format src scripts tests` / `uvx ruff check src scripts tests`. Keep lines under 100 characters (the codebase currently maxes out at 94).
@@ -37,20 +36,16 @@ src/
     profiles.py      #   company profiles / ticker universe
   storage/arctic.py  # declarative Dataset registry + generic read/write/upsert over ArcticDB
   jobs/              # recurring jobs that wire a vendor fetch to a storage write
-  api/               # read-side surface for consumers
-  config.py          # env/secrets (placeholder — not yet written)
-  main.py            # entry point (placeholder — not yet written)
+  config.py          # the only place `.env` / os.environ is read (`require(...)`)
 scripts/             # hand-run seeding jobs
 tests/               # mirrors the modules under test: test_arctic, test_fmp_*, test_equities
 ```
 
 **Dataflow is one-directional:** `vendors → jobs → storage`. Vendor modules never import storage; storage never makes HTTP calls. A job is the only place the two meet.
 
-### Current state (mid-refactor)
+### Current state
 
-`src/config.py`, `src/main.py`, `src/api/equities.py`, and `src/jobs/scheduler.py` are **empty placeholders**. `src/vendors/fmp.py` was split into the `src/vendors/fmp/` package.
-
-`update_equities.py` was gutted in that move and has since been restored: it calls `fetch_daily_prices` **once** for the whole batch and upserts on `(date, symbol)`. `uv run pytest` is green.
+Every file in `src/` is live code — the empty placeholders (`main.py`, `api/equities.py`, `jobs/scheduler.py`) and `scripts/seed_equities.py` were deleted in the lean-down pass, along with the profile-bulk progress-event protocol and the unused vendor knobs (`on_error`, per-call universe filters). The **read side of the warehouse is `storage.arctic.read`** — there is no separate `api/` layer to write. `uv run pytest` is green (66 tests).
 
 ### Storage: datasets are declared, not hand-written
 
@@ -86,9 +81,11 @@ FMP-specific facts worth keeping:
 - **Field names mix camelCase and snake_case.** Use `field(row, "marketCap", "market_cap")` rather than indexing directly.
 - **429/502/503/504 are expected, not exceptional.** `helpers.get` retries them with exponential backoff and honours `Retry-After`. Bulk endpoints throw 502 under load by FMP's own docs.
 - **Rate limits are etiquette, not quotas.** `RateLimiter` paces a rolling minute (default 250/min, conservative under the 300/min Starter plan); profile-bulk is paced optimistically and leans on the 429 backoff. Don't lower these into a hard 60s sleep without a reason.
-- **The number of profile-bulk parts is unknown up front** — pagination ends when a part comes back empty, bounded by `PROFILE_BULK_MAX_PARTS`.
+- **The number of profile-bulk parts is unknown up front** — pagination ends when a part comes back empty or FMP 400s the part number, bounded by `profiles.MAX_PARTS`.
+- **The universe filters are constants, not parameters.** `US_LISTED_EXCHANGES`, `TRADED_SECURITY_TYPES`, `EXCLUDED_INDUSTRIES` are what the warehouse trades; edit the constant rather than re-adding per-call overrides.
+- **Progress is one callback taking one printable string** (`notify=print`). Don't rebuild an event/payload protocol or a progress bar in the vendor layer.
 - **Pass `wait=` to skip sleeping in tests**; never `patch` `time.sleep` globally.
-- Each new dataset re-exports its public names through `src/vendors/fmp/__init__.py`'s `__all__`.
+- `src/vendors/fmp/__init__.py` re-exports only what other layers actually import — a schema and a fetch function per dataset. Tests import from the submodule directly.
 
 ## Configuration
 
@@ -96,7 +93,7 @@ FMP-specific facts worth keeping:
 
 Storage resolves to `s3s://s3.<region>.amazonaws.com:<bucket>?...&path_prefix=arcticdb`, library `market_data`.
 
-`src/config.py` exists to become the single place credentials are read; today `scripts/` and jobs call `load_dotenv()` and `os.environ` directly. **When you write `config.py`, move them onto it** — fail fast on missing keys, and stop reading `os.environ` outside it.
+`src/config.py` is the single place credentials are read: it calls `load_dotenv()` on import and exposes `require("FMP_API_KEY", ...)`, which returns the values and raises naming every missing key. **Never read `os.environ` outside it.**
 
 ## Safety rails (data-warehouse-specific)
 

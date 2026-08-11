@@ -6,13 +6,12 @@ covers every ticker passed.
 
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import Iterable
 
 from arcticdb.version_store.library import Library
-from dotenv import load_dotenv
 
+from src.config import require
 from src.storage.arctic import DAILY_PRICES, connect, upsert
 from src.vendors.fmp import fetch_daily_prices
 
@@ -34,24 +33,14 @@ def update_daily_prices(
 
 
 def main(argv: list[str]) -> None:
-    load_dotenv()
-
     if not argv:
         raise SystemExit(
             "Usage: python -m src.jobs.update_equities TICKER [TICKER ...]"
         )
 
-    missing = [
-        name
-        for name in ("FMP_API_KEY", "S3_BUCKET", "AWS_DEFAULT_REGION")
-        if not os.environ.get(name)
-    ]
-    if missing:
-        raise RuntimeError(f"Set {', '.join(missing)} before running update_equities")
+    api_key, bucket, region = require("FMP_API_KEY", "S3_BUCKET", "AWS_DEFAULT_REGION")
 
-    library = connect(os.environ["S3_BUCKET"], os.environ["AWS_DEFAULT_REGION"])
-
-    rows = update_daily_prices(argv, os.environ["FMP_API_KEY"], library)
+    rows = update_daily_prices(argv, api_key, connect(bucket, region))
 
     print(
         f"Upserted {rows:,} rows into '{DAILY_PRICES.symbol}' for {len(argv)} ticker(s)"

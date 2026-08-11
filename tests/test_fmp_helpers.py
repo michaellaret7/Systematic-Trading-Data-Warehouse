@@ -18,7 +18,7 @@ def test_parse_rows_keeps_mixed_numeric_columns_as_text() -> None:
         + ["FRAC,165.8"]
     )
 
-    rows = parse_rows(_csv_response(body), context="profile-bulk")
+    rows = parse_rows(_csv_response(body))
 
     assert len(rows) == 51
     assert rows[-1] == {"symbol": "FRAC", "fullTimeEmployees": "165.8"}
@@ -26,7 +26,7 @@ def test_parse_rows_keeps_mixed_numeric_columns_as_text() -> None:
 
 
 def test_parse_rows_handles_empty_body() -> None:
-    assert parse_rows(_csv_response(""), context="profile-bulk") == []
+    assert parse_rows(_csv_response("")) == []
 
 
 def test_get_retries_rate_limit_then_succeeds() -> None:
@@ -42,7 +42,6 @@ def test_get_retries_rate_limit_then_succeeds() -> None:
             {},
             client=client,
             max_attempts=5,
-            backoff_seconds=10.0,
             wait=lambda seconds, attempt: waits.append((seconds, attempt)),
         )
 

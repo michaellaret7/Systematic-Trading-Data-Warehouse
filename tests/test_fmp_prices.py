@@ -136,28 +136,6 @@ def test_rate_limits_each_ticker() -> None:
         assert params["apikey"] == "test-key"
 
 
-def test_skip_on_error() -> None:
-    def fake_get(url: str, params: dict, timeout: float = 60):
-        if params["symbol"] == "BAD":
-            return _mock_response([], status_code=500)
-        return _mock_response(_eod_payload([("2025-01-02", 50.0)]))
-
-    client = MagicMock(spec=httpx.Client)
-    client.get.side_effect = fake_get
-
-    with patch("src.vendors.fmp.prices.RateLimiter") as limiter_cls:
-        limiter_cls.return_value = MagicMock()
-        frame = fetch_daily_prices(
-            ["BAD", "OK"],
-            "test-key",
-            on_error="skip",
-            client=client,
-        )
-
-    assert frame.height == 1
-    assert frame["symbol"].item() == "OK"
-
-
 def test_empty_list() -> None:
     frame = fetch_daily_prices([], "test-key")
     assert frame.is_empty()
