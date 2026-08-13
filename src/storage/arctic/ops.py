@@ -40,6 +40,7 @@ def read(
             # ArcticDB silently ignores unknown column names; a typo should not
             # quietly return fewer columns than were asked for.
             raise ValueError(f"{dataset.symbol} has no column(s): {sorted(unknown)}")
+            
         wanted = set(columns) | set(dataset.key)
         selection = [name for name in dataset.schema if name in wanted]
 

@@ -8,31 +8,37 @@ BENCHMARK = "SPY"
 WINDOW = 60
 
 response = requests.get(
-    "http://159.203.132.63:8000/v1/universe",
+    "http://174.138.72.10:8000/v1/universe",
     params={
-        "sector": "Technology",
-        "industry": "Semiconductors",
+        "security_type": ["etf"],
     },
 )
 response.raise_for_status()
 symbols = [row["symbol"] for row in response.json()["data"]]
 
+
 import time
+
+# GET /v1/daily-prices repeats `symbols=` in the query string. uvicorn rejects
+# the request line once it grows past ~20KB (~1500 tickers) with a 400.
+CHUNK = 800
 start_time = time.time()
-response = requests.get(
-    "http://159.203.132.63:8000/v1/daily-prices",
-    params={
-        "symbols": symbols,
-        # Extra history so the first 60 trading days aren't all NaN.
-        "start": date(2020, 1, 1).isoformat(),
-        "end": date(2026, 8, 1).isoformat(),
-    },
-)
-response.raise_for_status()
+frames = []
+for i in range(0, len(symbols), CHUNK):
+    response = requests.get(
+        "http://174.138.72.10:8000/v1/daily-prices",
+        params={
+            "symbols": symbols[i : i + CHUNK],
+            "start": date(2026, 1, 1).isoformat(),
+            "end": date(2026, 8, 1).isoformat(),
+        },
+    )
+    response.raise_for_status()
+    frames.append(pd.DataFrame(response.json()["data"]))
+
 end_time = time.time()
 print(f"Time taken: {end_time - start_time} seconds")
 
-df = pd.DataFrame(response.json()["data"])
-
+df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 print(df.head())
 print(df.tail())

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Annotated
 
 from arcticdb import QueryBuilder
 from arcticdb.version_store.library import Library
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from src.api.dependencies import get_library
@@ -25,6 +25,8 @@ router = APIRouter(prefix="/v1/universe", tags=["universe"])
 def _where(
     categories: dict[str, list[str] | None],
     flags: dict[str, bool | None],
+    ipo_start: date | None = None,
+    ipo_end: date | None = None,
 ) -> QueryBuilder | None:
     """Combine the supplied filters into one pushed-down predicate, or None.
 
@@ -46,6 +48,15 @@ def _where(
 
         query = QueryBuilder() if query is None else query
         query = query[query[column] == flag]
+
+    # ArcticDB stores Date columns as naive datetime[ns]; compare as midnight.
+    if ipo_start is not None:
+        query = QueryBuilder() if query is None else query
+        query = query[query["ipo_date"] >= datetime.combine(ipo_start, time.min)]
+
+    if ipo_end is not None:
+        query = QueryBuilder() if query is None else query
+        query = query[query["ipo_date"] <= datetime.combine(ipo_end, time.min)]
 
     return query
 
@@ -103,6 +114,8 @@ def get_universe(
     is_etf: bool | None = None,
     is_fund: bool | None = None,
     is_adr: bool | None = None,
+    ipo_start: date | None = None,
+    ipo_end: date | None = None,
     library: Library = Depends(get_library),
 ) -> UniverseResponse:
     """Return the stored ticker universe, narrowed by the given filters.
@@ -111,7 +124,14 @@ def get_universe(
     accept several values (``?sector=Technology&sector=Energy``); different
     parameters AND together. Values other than ``symbols`` match exactly as
     the vendor spells them — ``Technology``, ``NASDAQ``, ``common``.
+    ``ipo_start`` / ``ipo_end`` are inclusive IPO-date bounds.
     """
+    if ipo_start is not None and ipo_end is not None and ipo_start > ipo_end:
+        raise HTTPException(
+            status_code=422,
+            detail="ipo_start must be on or before ipo_end",
+        )
+
     where = _where(
         {
             "security_type": security_type,
@@ -121,6 +141,8 @@ def get_universe(
             "country": country,
         },
         {"is_etf": is_etf, "is_fund": is_fund, "is_adr": is_adr},
+        ipo_start=ipo_start,
+        ipo_end=ipo_end,
     )
 
     frame = read(library, TICKER_UNIVERSE, symbols=symbols, where=where)

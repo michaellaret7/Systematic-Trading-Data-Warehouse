@@ -29,6 +29,7 @@ def ticker(
     industry: str = "Consumer Electronics",
     country: str = "US",
     is_adr: bool = False,
+    ipo_date: date = date(1980, 12, 12),
 ) -> dict:
     return {
         "symbol": symbol,
@@ -43,7 +44,7 @@ def ticker(
         "market_cap": 1_000.0,
         "beta": 1.1,
         "price": 100.0,
-        "ipo_date": date(1980, 12, 12),
+        "ipo_date": ipo_date,
         "cik": "0000320193",
         "isin": None,
         "cusip": None,
@@ -211,6 +212,42 @@ def test_universe_filters_industry(api) -> None:
 
     assert response.status_code == 200
     assert symbols_of(response) == ["MSFT"]
+
+
+def test_universe_filters_ipo_date_range(api) -> None:
+    client, market_data = api
+    write(
+        market_data,
+        TICKER_UNIVERSE,
+        universe(
+            ticker("OLD", "Old Co", "common", ipo_date=date(2010, 1, 1)),
+            ticker("MID", "Mid Co", "common", ipo_date=date(2026, 1, 1)),
+            ticker("NEW", "New Co", "common", ipo_date=date(2026, 6, 1)),
+        ),
+    )
+
+    after = client.get("/v1/universe", params={"ipo_start": "2026-01-01"})
+    before = client.get("/v1/universe", params={"ipo_end": "2026-01-01"})
+    both = client.get(
+        "/v1/universe",
+        params={"ipo_start": "2026-01-01", "ipo_end": "2026-03-01"},
+    )
+
+    assert symbols_of(after) == ["MID", "NEW"]
+    assert symbols_of(before) == ["MID", "OLD"]
+    assert symbols_of(both) == ["MID"]
+
+
+def test_universe_rejects_an_inverted_ipo_date_range(api) -> None:
+    client, _ = api
+
+    response = client.get(
+        "/v1/universe",
+        params={"ipo_start": "2026-03-01", "ipo_end": "2026-01-01"},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "ipo_start must be on or before ipo_end"}
 
 
 def test_universe_returns_an_empty_result_for_unknown_symbol(api) -> None:
