@@ -27,6 +27,8 @@ def _where(
     flags: dict[str, bool | None],
     ipo_start: date | None = None,
     ipo_end: date | None = None,
+    market_cap_min: float | None = None,
+    market_cap_max: float | None = None,
 ) -> QueryBuilder | None:
     """Combine the supplied filters into one pushed-down predicate, or None.
 
@@ -57,6 +59,14 @@ def _where(
     if ipo_end is not None:
         query = QueryBuilder() if query is None else query
         query = query[query["ipo_date"] <= datetime.combine(ipo_end, time.min)]
+
+    if market_cap_min is not None:
+        query = QueryBuilder() if query is None else query
+        query = query[query["market_cap"] >= market_cap_min]
+
+    if market_cap_max is not None:
+        query = QueryBuilder() if query is None else query
+        query = query[query["market_cap"] <= market_cap_max]
 
     return query
 
@@ -116,6 +126,8 @@ def get_universe(
     is_adr: bool | None = None,
     ipo_start: date | None = None,
     ipo_end: date | None = None,
+    market_cap_min: float | None = None,
+    market_cap_max: float | None = None,
     library: Library = Depends(get_library),
 ) -> UniverseResponse:
     """Return the stored ticker universe, narrowed by the given filters.
@@ -125,11 +137,22 @@ def get_universe(
     parameters AND together. Values other than ``symbols`` match exactly as
     the vendor spells them — ``Technology``, ``NASDAQ``, ``common``.
     ``ipo_start`` / ``ipo_end`` are inclusive IPO-date bounds.
+    ``market_cap_min`` / ``market_cap_max`` are inclusive dollar bounds.
     """
     if ipo_start is not None and ipo_end is not None and ipo_start > ipo_end:
         raise HTTPException(
             status_code=422,
             detail="ipo_start must be on or before ipo_end",
+        )
+
+    if (
+        market_cap_min is not None
+        and market_cap_max is not None
+        and market_cap_min > market_cap_max
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="market_cap_min must be on or before market_cap_max",
         )
 
     where = _where(
@@ -143,6 +166,8 @@ def get_universe(
         {"is_etf": is_etf, "is_fund": is_fund, "is_adr": is_adr},
         ipo_start=ipo_start,
         ipo_end=ipo_end,
+        market_cap_min=market_cap_min,
+        market_cap_max=market_cap_max,
     )
 
     frame = read(library, TICKER_UNIVERSE, symbols=symbols, where=where)

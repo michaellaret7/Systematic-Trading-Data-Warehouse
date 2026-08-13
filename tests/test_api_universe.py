@@ -30,6 +30,7 @@ def ticker(
     country: str = "US",
     is_adr: bool = False,
     ipo_date: date = date(1980, 12, 12),
+    market_cap: float = 1_000.0,
 ) -> dict:
     return {
         "symbol": symbol,
@@ -41,7 +42,7 @@ def ticker(
         "industry": industry,
         "country": country,
         "currency": "USD",
-        "market_cap": 1_000.0,
+        "market_cap": market_cap,
         "beta": 1.1,
         "price": 100.0,
         "ipo_date": ipo_date,
@@ -248,6 +249,44 @@ def test_universe_rejects_an_inverted_ipo_date_range(api) -> None:
 
     assert response.status_code == 422
     assert response.json() == {"detail": "ipo_start must be on or before ipo_end"}
+
+
+def test_universe_filters_market_cap_range(api) -> None:
+    client, market_data = api
+    write(
+        market_data,
+        TICKER_UNIVERSE,
+        universe(
+            ticker("SMALL", "Small Co", "common", market_cap=5e8),
+            ticker("MID", "Mid Co", "common", market_cap=5e9),
+            ticker("LARGE", "Large Co", "common", market_cap=5e11),
+        ),
+    )
+
+    above = client.get("/v1/universe", params={"market_cap_min": 5e9})
+    below = client.get("/v1/universe", params={"market_cap_max": 5e9})
+    both = client.get(
+        "/v1/universe",
+        params={"market_cap_min": 1e9, "market_cap_max": 1e10},
+    )
+
+    assert symbols_of(above) == ["LARGE", "MID"]
+    assert symbols_of(below) == ["MID", "SMALL"]
+    assert symbols_of(both) == ["MID"]
+
+
+def test_universe_rejects_an_inverted_market_cap_range(api) -> None:
+    client, _ = api
+
+    response = client.get(
+        "/v1/universe",
+        params={"market_cap_min": 1e10, "market_cap_max": 1e9},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "market_cap_min must be on or before market_cap_max",
+    }
 
 
 def test_universe_returns_an_empty_result_for_unknown_symbol(api) -> None:
